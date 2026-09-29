@@ -124,11 +124,19 @@ const FilmWatching = () => {
                     const accept = res.data.result.map((item) => ({
                         videoId: item.id,
                         title: item.title,
+                        // Backend chuyển mã HLS ở nền: chỉ tập READY (hoặc tập cũ không
+                        // có trạng thái) mới phát được ngay.
+                        hlsStatus: item.hlsStatus ?? null,
                     }))
                     setEpisodeList(accept)
                     if (accept.length > 0) {
-                        setCurrentEpisode(0);
-                        setVideoId(accept[0].videoId);
+                        // Ưu tiên tập đã xử lý xong thay vì mặc định tập đầu tiên.
+                        const firstPlayable = accept.findIndex(
+                            (item) => item.hlsStatus !== 'PENDING' && item.hlsStatus !== 'PROCESSING'
+                        );
+                        const target = firstPlayable >= 0 ? firstPlayable : 0;
+                        setCurrentEpisode(target);
+                        setVideoId(accept[target].videoId);
                     }
                 }
             } catch (error) {
@@ -166,6 +174,10 @@ const FilmWatching = () => {
             message.success(`Đang chuyển sang ${episode.title}`);
         }
     };
+
+    // Tập đang chọn chưa có HLS trên R2 -> player sẽ nhận 409, hiện thông báo thay vì lỗi.
+    const currentIsProcessing = episodeList[currentEpisode]?.hlsStatus === 'PENDING'
+        || episodeList[currentEpisode]?.hlsStatus === 'PROCESSING';
 
 
     return (
@@ -205,6 +217,17 @@ const FilmWatching = () => {
                                         <ClockCircleOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />
                                         <Text style={{ fontSize: 16, color: '#bfbfbf' }}>
                                             Series chưa được cập nhật, vui lòng chờ thêm.
+                                        </Text>
+                                    </Flex>
+                                ) : currentIsProcessing ? (
+                                    <Flex
+                                        align="center"
+                                        justify="center"
+                                        style={{ minHeight: 360, flexDirection: 'column', gap: 12 }}
+                                    >
+                                        <ClockCircleOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />
+                                        <Text style={{ fontSize: 16, color: '#bfbfbf' }}>
+                                            Tập này đang được chuyển mã, vui lòng quay lại sau ít phút.
                                         </Text>
                                     </Flex>
                                 ) : (
@@ -299,7 +322,7 @@ const FilmWatching = () => {
                                 </Space>
                                 <Space direction="vertical" size={0}>
                                     <Text type="warning">Views </Text>
-                                    <Text>{selectedSeason?.viewCount.toLocaleString()}</Text>
+                                    <Text>{(selectedSeason?.viewCount ?? 0).toLocaleString()}</Text>
                                 </Space>
                             </Flex>
                         </Card>
