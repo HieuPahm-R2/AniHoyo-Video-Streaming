@@ -28,8 +28,10 @@ public class Tag {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private long id;
 
+    // Tên field đặt là `name` cho đối xứng với Category.name (trước đây là tagName
+    // nên frontend phải xử lý lệch: category -> item.name, tag -> item.tagName).
     @NotBlank(message = "Not to blank this field")
-    private String tagName;
+    private String name;
     @ManyToMany(mappedBy = "tags", fetch = FetchType.LAZY)
     @JsonIgnore
     private Set<Film> films;

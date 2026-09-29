@@ -13,7 +13,7 @@ public class TagDTO {
     private Long id;
     @NotBlank(message = "Tên tag không được để trống")
     @Size(max = 255, message = "Tên tag tối đa 255 ký tự")
-    private String tagName;
+    private String name;
 
     public TagDTO(Long id) {
         this.id = id;
