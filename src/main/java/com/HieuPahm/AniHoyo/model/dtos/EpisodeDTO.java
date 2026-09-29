@@ -1,6 +1,7 @@
 package com.HieuPahm.AniHoyo.model.dtos;
 
 import com.HieuPahm.AniHoyo.model.entities.Season;
+import com.HieuPahm.AniHoyo.utils.constant.HlsStatus;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -24,4 +25,10 @@ public class EpisodeDTO {
     private String contentType;
 
     private Season season;
+
+    /** HLS pipeline state (PENDING / PROCESSING / READY / FAILED). */
+    private HlsStatus hlsStatus;
+
+    /** Reason the HLS pipeline failed; null while it is fine or still running. */
+    private String hlsError;
 }
