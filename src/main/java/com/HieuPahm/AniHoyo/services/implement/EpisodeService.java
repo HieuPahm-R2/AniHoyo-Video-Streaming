@@ -16,12 +16,20 @@ import com.turkraft.springfilter.parser.node.FilterNode;
 
 import org.modelmapper.ModelMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+
+import com.HieuPahm.AniHoyo.config.HlsProcessingConfig;
+import com.HieuPahm.AniHoyo.utils.constant.HlsStatus;
+
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -32,10 +40,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 public class EpisodeService implements IEpisodeService {
     @Autowired
@@ -55,20 +70,85 @@ public class EpisodeService implements IEpisodeService {
     private final SeasonRepository seasonRepository;
     private final ModelMapper modelMapper;
     private final R2MediaStorageService r2MediaStorageService;
+    private final Executor hlsExecutor;
+
+    /**
+     * Episode ids currently queued or running, so a double click cannot transcode
+     * twice.
+     * addt phần tử vào Set,
+     * nó sẽ làm Key của map, còn Value là một giá trị cố định
+     * (Boolean.TRUE).
+     */
+    private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 
     public EpisodeService(EpisodeRepository episodeRepository, SeasonRepository seasonRepository,
-            ModelMapper modelMapper, R2MediaStorageService r2MediaStorageService) {
+            ModelMapper modelMapper, R2MediaStorageService r2MediaStorageService,
+            @Qualifier(HlsProcessingConfig.HLS_EXECUTOR) Executor hlsExecutor) {
         this.episodeRepository = episodeRepository;
         this.seasonRepository = seasonRepository;
         this.modelMapper = modelMapper;
         this.r2MediaStorageService = r2MediaStorageService;
+        this.hlsExecutor = hlsExecutor;
     }
 
     @Override
     public EpisodeDTO insert(EpisodeDTO dto) {
-        Episode ep = this.episodeRepository.save(modelMapper.map(dto, Episode.class));
-        processVideo(ep.getId());
+        Episode ep = modelMapper.map(dto, Episode.class);
+        ep.setHlsStatus(HlsStatus.PENDING);
+        ep.setHlsError(null);
+        ep = this.episodeRepository.save(ep);
+        // Encoding happens on the worker thread: the request must not hold the
+        // connection open for the minutes FFmpeg needs (that used to surface as a
+        // 500 + a client timeout while the episode row was already committed).
+        enqueueProcessing(ep.getId());
         return modelMapper.map(ep, EpisodeDTO.class);
+    }
+
+    @Override
+    public EpisodeDTO queueProcessing(Long id) throws BadActionException {
+        Episode episode = this.episodeRepository.findById(id)
+                .orElseThrow(() -> new BadActionException("Not Found this episode"));
+        if (episode.getHlsStatus() != HlsStatus.READY) {
+            episode.setHlsStatus(HlsStatus.PENDING);
+        }
+        episode.setHlsError(null);
+        this.episodeRepository.save(episode);
+        enqueueProcessing(id);
+        return modelMapper.map(episode, EpisodeDTO.class);
+    }
+
+    private void enqueueProcessing(long id) {
+        if (!inFlight.add(id)) {
+            log.info("HLS processing for episode {} is already queued/running, skipping.", id);
+            return;
+        }
+        try {
+            hlsExecutor.execute(() -> {
+                try {
+                    processVideo(id);
+                } finally {
+                    inFlight.remove(id);
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            inFlight.remove(id);
+            log.error("HLS queue is full, episode {} was not scheduled.", id, ex);
+            markStatus(id, HlsStatus.FAILED, "Hàng đợi xử lý video đang đầy, vui lòng thử lại sau.");
+        }
+    }
+
+    /**
+     * Re-queues pipelines that were interrupted by a restart (their row is stuck
+     * in PENDING/PROCESSING while no worker is running anymore).
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void resumeInterruptedProcessing() {
+        List<Episode> pending = this.episodeRepository
+                .findByHlsStatusIn(List.of(HlsStatus.PENDING, HlsStatus.PROCESSING));
+        for (Episode episode : pending) {
+            log.info("Re-queueing interrupted HLS processing for episode {}.", episode.getId());
+            enqueueProcessing(episode.getId());
+        }
     }
 
     @Override
@@ -82,13 +162,25 @@ public class EpisodeService implements IEpisodeService {
     @CacheEvict(value = "episodes", key = "#dto.id")
     public EpisodeDTO update(EpisodeDTO dto) throws BadActionException {
         Optional<Episode> ep = this.episodeRepository.findById(dto.getId());
-        if (ep.isPresent()) {
-            ep.get().setTitle(dto.getTitle());
-            ep.get().setFilePath(dto.getFilePath());
-            ep.get().setContentType(dto.getContentType());
-            this.episodeRepository.save(ep.get());
+        if (ep.isEmpty()) {
+            // Used to save the entity and *then* throw, so the API reported a
+            // failure for a change that had already been written.
+            throw new BadActionException("Not Found this ep");
         }
-        throw new BadActionException("Not Found this ep");
+        boolean sourceChanged = !Objects.equals(ep.get().getFilePath(), dto.getFilePath());
+        ep.get().setTitle(dto.getTitle());
+        ep.get().setFilePath(dto.getFilePath());
+        ep.get().setContentType(dto.getContentType());
+        if (sourceChanged) {
+            // A new source means a new HLS prefix on R2, so it has to be encoded again.
+            ep.get().setHlsStatus(HlsStatus.PENDING);
+            ep.get().setHlsError(null);
+        }
+        Episode saved = this.episodeRepository.save(ep.get());
+        if (sourceChanged) {
+            enqueueProcessing(saved.getId());
+        }
+        return modelMapper.map(saved, EpisodeDTO.class);
     }
 
     @Override
@@ -127,25 +219,87 @@ public class EpisodeService implements IEpisodeService {
     }
 
     @Override
-    public long processVideo(long id) {
-        Episode episode = this.episodeRepository.findById(id).get();
-        if (r2MediaStorageService.isEnabled()) {
-            return processVideoWithR2(episode);
+    public void processVideo(long id) {
+        Optional<Episode> found = this.episodeRepository.findById(id);
+        if (found.isEmpty()) {
+            log.warn("HLS processing requested for unknown episode {}.", id);
+            return;
         }
+        Episode episode = found.get();
+        markStatus(id, HlsStatus.PROCESSING, null);
+        log.info("HLS processing started for episode {} (source: {}).", id, episode.getFilePath());
+        try {
+            if (r2MediaStorageService.isEnabled()) {
+                processVideoWithR2(episode);
+            } else {
+                processVideoLocally(episode);
+            }
+            markStatus(id, HlsStatus.READY, null);
+            log.info("HLS processing finished for episode {}.", id);
+        } catch (Exception ex) {
+            log.error("HLS processing failed for episode {}.", id, ex);
+            markStatus(id, HlsStatus.FAILED, rootMessage(ex));
+        }
+    }
 
+    /**
+     * Non-R2 fallback: encode next to the original inside the local upload volume.
+     */
+    private void processVideoLocally(Episode episode) {
         URI inputUri = URI.create(baseURI + "videos/" + episode.getFilePath());
         Path inputVideoPath = Paths.get(inputUri);
+        if (!Files.isRegularFile(inputVideoPath)) {
+            // Without this check FFmpeg fails with a wall of banner text and the real
+            // reason ("the upload never landed in the local volume") is lost.
+            throw new IllegalStateException("Không tìm thấy file gốc: " + inputVideoPath
+                    + ". Khi R2_ENABLED=false, video phải nằm trong volume uploads"
+                    + " (kiểm tra POST /api/v1/upload/video có trả về tên file local không).");
+        }
         Path outputRoot = Paths.get(URI.create(baseURI + "videos_hls/" + episode.getTitle() + "/"));
-
         try {
             encodeHls(inputVideoPath, outputRoot);
-            return id;
         } catch (IOException ex) {
             throw new RuntimeException("processing failed !!\n" + ex.getMessage(), ex);
         }
     }
 
-    private long processVideoWithR2(Episode episode) {
+    private void markStatus(long id, HlsStatus status, String error) {
+        try {
+            this.episodeRepository.findById(id).ifPresent(episode -> {
+                episode.setHlsStatus(status);
+                episode.setHlsError(truncate(error));
+                this.episodeRepository.save(episode);
+            });
+        } catch (RuntimeException ex) {
+            // Never let bookkeeping hide the actual pipeline result.
+            log.error("Could not persist HLS status {} for episode {}.", status, id, ex);
+        }
+    }
+
+    /**
+     * Column is 500 chars wide; a raw FFmpeg log would otherwise abort the update.
+     */
+    private static String truncate(String value) {
+        if (value == null || value.length() <= 500) {
+            return value;
+        }
+        return value.substring(0, 497) + "...";
+    }
+
+    /** Deepest cause message: FFmpeg/awssdk put the useful text at the bottom. */
+    private static String rootMessage(Throwable ex) {
+        Throwable cause = ex;
+        String message = ex.getMessage();
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+            if (cause.getMessage() != null && !cause.getMessage().isBlank()) {
+                message = cause.getMessage();
+            }
+        }
+        return message != null ? message : ex.getClass().getSimpleName();
+    }
+
+    private void processVideoWithR2(Episode episode) {
         Path inputVideoPath = null;
         Path outputRoot = null;
         try {
@@ -153,7 +307,6 @@ public class EpisodeService implements IEpisodeService {
             outputRoot = Files.createTempDirectory("anihoyo-hls-" + episode.getId() + "-");
             encodeHls(inputVideoPath, outputRoot);
             r2MediaStorageService.uploadHlsDirectory(episode, outputRoot);
-            return episode.getId();
         } catch (IOException ex) {
             throw new RuntimeException("R2 video processing failed !!\n" + ex.getMessage(), ex);
         } finally {
@@ -289,12 +442,26 @@ public class EpisodeService implements IEpisodeService {
 
             int exit = process.waitFor();
             if (exit != 0) {
-                String msg = output.length() > 0 ? output.toString() : "unknown error";
-                throw new RuntimeException("processing failed !!\n" + msg);
+                throw new RuntimeException("ffmpeg exit " + exit + " (" + targetHeight + "p): " + tail(output));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * FFmpeg prints its whole build banner (hundreds of lines) before the actual
+     * error, and the episode column only keeps 500 chars — so report the tail.
+     */
+    private static String tail(CharSequence output) {
+        String text = output.toString().trim();
+        if (text.isEmpty()) {
+            return "ffmpeg không in ra output nào";
+        }
+        String[] lines = text.split("\\R");
+        int from = Math.max(0, lines.length - 8);
+        String joined = String.join(" | ", Arrays.copyOfRange(lines, from, lines.length));
+        return joined.length() > 400 ? joined.substring(joined.length() - 400) : joined;
     }
 }
