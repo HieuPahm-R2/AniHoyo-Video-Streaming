@@ -53,11 +53,25 @@ public class EpisodeController {
     }
 
     @PostMapping("/add-episode")
+    @MessageApi("Thêm tập phim (video được chuyển mã HLS ở nền)")
     public ResponseEntity<?> createEpisode(@Valid @RequestBody EpisodeDTO dto) throws BadActionException {
         if (this.episodeService.checkExistSeason(dto.getSeason().getId()) == false) {
             throw new BadActionException("Not Found this season");
         }
+        // Returns as soon as the row is stored; FFmpeg output is produced by the
+        // background worker and reported through EpisodeDTO#hlsStatus.
         return ResponseEntity.status(HttpStatus.CREATED).body(this.episodeService.insert(dto));
+    }
+
+    /**
+     * Re-runs the HLS pipeline for one episode: the fix for a failed run
+     * (see {@code hlsError}) and for rows created before async processing.
+     * The R2 key is derived from the source key, so re-running is idempotent.
+     */
+    @PostMapping("/process-episode/{id}")
+    @MessageApi("Xử lý lại HLS cho tập phim")
+    public ResponseEntity<EpisodeDTO> processEpisode(@PathVariable("id") long id) throws BadActionException {
+        return ResponseEntity.accepted().body(this.episodeService.queueProcessing(id));
     }
 
     @PostMapping("/update-episode")
@@ -100,8 +114,10 @@ public class EpisodeController {
             // R2 originals stay private; the client never receives this object URL.
             fileUpload = r2MediaStorageService.storeSourceVideo(file);
         } else {
-            this.fileServiceImpl.createFolder(baseURI + folder);
-            fileUpload = this.fileServiceImpl.storeFile(file, folder);
+            // Must be storeLocalFile, not storeFile: processVideoLocally runs FFmpeg
+            // on <base-uri>/<folder>/<name>, while storeFile writes to SeaweedFS as
+            // soon as that store is enabled (images), which FFmpeg never reads.
+            fileUpload = this.fileServiceImpl.storeLocalFile(file, folder);
         }
         ResUpFileDTO result = new ResUpFileDTO(fileUpload, Instant.now());
 

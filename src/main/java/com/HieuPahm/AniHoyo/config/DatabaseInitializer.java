@@ -108,6 +108,8 @@ public class DatabaseInitializer implements CommandLineRunner {
 
             arrResult.add(new Permission("Upload video", "/api/v1/upload/video", "POST", "EPISODES"));
             arrResult.add(new Permission("Upload file", "/api/v1/files", "POST", "FILES"));
+            arrResult.add(new Permission("Process HLS for an episode", "/api/v1/process-episode/{id}", "POST",
+                    "EPISODES"));
 
             arrResult.add(new Permission("Post a comment", "/api/v1/comments/post/{ssId}", "POST", "COMMENTS"));
             arrResult.add(new Permission("Read comments", "/api/v1/comments/{ssId}", "GET", "COMMENTS"));
@@ -173,5 +175,36 @@ public class DatabaseInitializer implements CommandLineRunner {
         } else {
             System.out.println("END TASK");
         }
+        grantMissingPermissions();
+    }
+
+    /**
+     * Endpoints added after the very first release need a permission row, even on
+     * a database that is already seeded (the block above only fills an empty
+     * table). Without this, a new endpoint answers
+     * {@code 403 Role 'ADMIN' không có quyền ...} until somebody inserts the row
+     * by hand.
+     *
+     * <p>Only the entries listed here are touched, so whatever an admin edited in
+     * the permission UI stays as it is.
+     */
+    private void grantMissingPermissions() {
+        List<Permission> required = List.of(
+                new Permission("Process HLS for an episode", "/api/v1/process-episode/{id}", "POST", "EPISODES"));
+        List<Permission> missing = required.stream()
+                .filter(permission -> !this.permissionRepository.existsByModuleAndApiPathAndMethod(
+                        permission.getModule(), permission.getApiPath(), permission.getMethod()))
+                .collect(Collectors.toList());
+        if (missing.isEmpty()) {
+            return;
+        }
+        this.permissionRepository.saveAll(missing);
+        // Permissions are lazy: load them eagerly, otherwise this (transaction-less)
+        // runner would fail with LazyInitializationException on getPermissions().
+        this.roleRepository.findByNameWithPermissions("ADMIN").ifPresent(admin -> {
+            admin.getPermissions().addAll(missing);
+            this.roleRepository.save(admin);
+        });
+        System.out.println(">>>>>>>>> GRANTED " + missing.size() + " missing permission(s) to ADMIN");
     }
 }
