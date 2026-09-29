@@ -2,16 +2,21 @@ package com.HieuPahm.AniHoyo.config;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import com.HieuPahm.AniHoyo.model.entities.Category;
 import com.HieuPahm.AniHoyo.model.entities.Permission;
 import com.HieuPahm.AniHoyo.model.entities.Role;
+import com.HieuPahm.AniHoyo.model.entities.Tag;
 import com.HieuPahm.AniHoyo.model.entities.User;
+import com.HieuPahm.AniHoyo.repository.CategoryRepository;
 import com.HieuPahm.AniHoyo.repository.PermissionRepository;
 import com.HieuPahm.AniHoyo.repository.RoleRepository;
+import com.HieuPahm.AniHoyo.repository.TagRepository;
 import com.HieuPahm.AniHoyo.repository.UserRepository;
 
 @Service
@@ -19,13 +24,18 @@ public class DatabaseInitializer implements CommandLineRunner {
     private final RoleRepository roleRepository;
     private final PermissionRepository permissionRepository;
     private final UserRepository userRepository;
+    private final CategoryRepository categoryRepository;
+    private final TagRepository tagRepository;
     private final PasswordEncoder passwordEncoder;
 
     public DatabaseInitializer(RoleRepository roleRepository, PermissionRepository permissionRepository,
-            UserRepository userRepository, PasswordEncoder passwordEncoder) {
+            UserRepository userRepository, CategoryRepository categoryRepository, TagRepository tagRepository,
+            PasswordEncoder passwordEncoder) {
         this.roleRepository = roleRepository;
         this.userRepository = userRepository;
         this.permissionRepository = permissionRepository;
+        this.categoryRepository = categoryRepository;
+        this.tagRepository = tagRepository;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -35,6 +45,8 @@ public class DatabaseInitializer implements CommandLineRunner {
         long countPermission = this.permissionRepository.count();
         long countRole = this.roleRepository.count();
         long countUser = this.userRepository.count();
+        long countCategory = this.categoryRepository.count();
+        long countTag = this.tagRepository.count();
 
         if (countPermission == 0) {
             ArrayList<Permission> arrResult = new ArrayList<>();
@@ -128,7 +140,35 @@ public class DatabaseInitializer implements CommandLineRunner {
             }
             this.userRepository.save(initUser);
         }
-        if (countRole > 0 && countPermission > 0 && countUser > 0) {
+        // Reference data for the "add film" form: a stable list of genres
+        // (categories) and highlight tags. Seeded once, only while the table is
+        // empty, so anything edited/added in the admin UI (table-category /
+        // table-tag) is respected on later restarts.
+        if (countCategory == 0) {
+            List<String> genreNames = List.of(
+                    "Hành Động", "Phiêu Lưu", "Hài Hước", "Học Đường", "Kỳ Ảo", "Kinh Dị",
+                    "Lãng Mạn", "Mecha", "Âm Nhạc", "Bí Ẩn", "Đời Thường", "Thể Thao",
+                    "Siêu Nhiên", "Isekai", "Shounen", "Seinen", "Josei", "Shoujo");
+            List<Category> categories = genreNames.stream().map(name -> {
+                Category category = new Category();
+                category.setName(name);
+                return category;
+            }).collect(Collectors.toList());
+            this.categoryRepository.saveAll(categories);
+            System.out.println(">>>>>>>>> SEEDED " + categories.size() + " film categories");
+        }
+        if (countTag == 0) {
+            List<String> tagNames = List.of(
+                    "Hot", "Vietsub", "Thuyết Minh", "Full HD", "Trọn Bộ", "Độc Quyền");
+            List<Tag> tags = tagNames.stream().map(name -> {
+                Tag tag = new Tag();
+                tag.setName(name);
+                return tag;
+            }).collect(Collectors.toList());
+            this.tagRepository.saveAll(tags);
+            System.out.println(">>>>>>>>> SEEDED " + tags.size() + " film tags");
+        }
+        if (countRole > 0 && countPermission > 0 && countUser > 0 && countCategory > 0 && countTag > 0) {
             System.out.println("SKIP INITIAL DATABASE");
         } else {
             System.out.println("END TASK");
