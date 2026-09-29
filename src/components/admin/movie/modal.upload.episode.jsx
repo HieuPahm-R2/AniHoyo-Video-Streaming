@@ -19,23 +19,38 @@ const ModalEpisodeUpload = (props) => {
             message.error("Vui lòng upload tập phim!");
             return;
         }
+        if (!selectedSeason?.id) {
+            message.error("Vui lòng chọn mùa phim trước khi thêm tập!");
+            return;
+        }
         setIsLoading(true);
-        const res = await createEpisodeAPI(titleEpisode, urlVideo, contentType, selectedSeason?.id);
-        if (res && res.data) {
-            notification.success({
-                description: `Tải lên tập phim thành công`,
-                message: "Upload Done!", s
-            })
-            setModalAddEpisode(false)
-            setIsLoading(false)
-            setDataEpisode(res)
-            window.location.reload();
-        } else {
+        try {
+            // Backend chỉ lưu episode rồi trả về ngay; FFmpeg chạy ở nền và trạng
+            // thái nằm trong `hlsStatus` (PENDING -> PROCESSING -> READY/FAILED).
+            const res = await createEpisodeAPI(titleEpisode, urlVideo, contentType, selectedSeason?.id);
+            if (res && res.data) {
+                notification.success({
+                    description: `Đã thêm "${titleEpisode}". Video đang được chuyển mã HLS ở nền, xem được sau ít phút.`,
+                    message: "Upload Done!",
+                })
+                setModalAddEpisode(false)
+                setDataEpisode(res)
+                window.location.reload();
+            } else {
+                notification.error({
+                    description: res?.message ?? "Không rõ nguyên nhân",
+                    message: "Đã có lỗi xảy ra",
+                })
+                setModalAddEpisode(false)
+            }
+        } catch (error) {
+            // axios.customize resolve lỗi HTTP thành body lỗi, nên chỉ còn lỗi mạng
+            // hoặc lỗi phía client rơi vào đây.
             notification.error({
-                description: res.message,
+                description: error?.message ?? "Không gửi được yêu cầu lên server",
                 message: "Đã có lỗi xảy ra",
             })
-            setModalAddEpisode(false)
+        } finally {
             setIsLoading(false)
         }
     }

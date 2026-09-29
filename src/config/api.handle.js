@@ -39,6 +39,10 @@ export const createEpisodeAPI = (title, filePath, contentType, seasonId) => {
 export const fetchAllEpisodeBySeason = (seasonId) => {
     return instance.get(`/api/v1/episodes/by-season/${seasonId}`)
 }
+// Xử lý lại HLS cho 1 tập (dùng khi hlsStatus=FAILED hoặc tập cũ chưa có HLS trên R2).
+export const processEpisodeAPI = (id) => {
+    return instance.post(`/api/v1/process-episode/${id}`)
+}
 // Film
 // Reference data (genres + highlight tags): lấy 1 lần với size lớn để Select không
 // bị thiếu lựa chọn khi số thể loại/tag vượt quá page size mặc định (20).

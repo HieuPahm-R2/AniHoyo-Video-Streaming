@@ -1,7 +1,7 @@
-import { Drawer, message, List, Avatar } from 'antd'
+import { Alert, Button, Drawer, message, List, Avatar, Space, Tag, Tooltip } from 'antd'
 import React, { useEffect, useState } from 'react'
 
-import { fetchAllEpisodeBySeason } from '@/config/api.handle';
+import { fetchAllEpisodeBySeason, processEpisodeAPI } from '@/config/api.handle';
 import { MediaPlayer } from '@vidstack/react';
 
 import '@vidstack/react/player/styles/default/theme.css';
@@ -97,6 +97,9 @@ const ModalEpisodeList = (props) => {
                     const accept = res.data.result.map((item) => ({
                         videoId: item.id,
                         title: item.title,
+                        // PENDING/PROCESSING/READY/FAILED — do backend chuyển mã HLS ở nền.
+                        hlsStatus: item.hlsStatus ?? null,
+                        hlsError: item.hlsError ?? null,
                     }))
                     setEpisodeList(accept)
                     console.log('Episode list set:', accept)
@@ -147,6 +150,41 @@ const ModalEpisodeList = (props) => {
         setModalListEpisode(false);
     }
 
+    const currentEp = episodeList[currentEpisode];
+    const isProcessing = currentEp?.hlsStatus === 'PENDING' || currentEp?.hlsStatus === 'PROCESSING';
+    const isFailed = currentEp?.hlsStatus === 'FAILED';
+
+    // Gửi lại yêu cầu chuyển mã cho tập đang chọn: POST /api/v1/process-episode/{id}
+    const handleReprocess = async () => {
+        if (!currentEp) return;
+        setIsLoading(true);
+        try {
+            await processEpisodeAPI(currentEp.videoId);
+            message.success('Đã gửi yêu cầu chuyển mã lại, đợi vài phút rồi mở lại danh sách tập.');
+        } finally {
+            setIsLoading(false);
+            fetchEpisodes();
+        }
+    }
+
+    const statusTag = (episode) => {
+        switch (episode?.hlsStatus) {
+            case 'READY':
+                return <Tag color="green">Sẵn sàng</Tag>;
+            case 'PROCESSING':
+            case 'PENDING':
+                return <Tag color="blue">Đang xử lý</Tag>;
+            case 'FAILED':
+                return (
+                    <Tooltip title={episode.hlsError || 'Không rõ nguyên nhân'}>
+                        <Tag color="red">Lỗi xử lý</Tag>
+                    </Tooltip>
+                );
+            default:
+                return null;
+        }
+    }
+
     return (
         <Drawer
             title={
@@ -166,7 +204,26 @@ const ModalEpisodeList = (props) => {
                 {/* Video Player Section */}
                 <div style={{ flex: '2', height: "400px", }}>
 
-                    {videoId && (
+                    {isProcessing && (
+                        <Alert
+                            type="info"
+                            showIcon
+                            message="Video đang được chuyển mã HLS"
+                            description="Tập này chưa phát được. Đợi vài phút rồi mở lại danh sách tập."
+                        />
+                    )}
+
+                    {isFailed && (
+                        <Alert
+                            type="error"
+                            showIcon
+                            message="Chuyển mã video thất bại"
+                            description={currentEp?.hlsError || 'Không rõ nguyên nhân.'}
+                            action={<Button size="small" danger onClick={handleReprocess}>Xử lý lại</Button>}
+                        />
+                    )}
+
+                    {!isProcessing && !isFailed && videoId && (
                         <MediaPlayer
                             viewType='video'
                             streamType='on-demand'
@@ -256,18 +313,21 @@ const ModalEpisodeList = (props) => {
                                             }}>
                                                 {episodeList.title}
                                             </span>
-                                            {currentEpisode === index && (
-                                                <span style={{
-                                                    color: '#52c41a',
-                                                    fontSize: '12px',
-                                                    backgroundColor: '#f6ffed',
-                                                    padding: '4px 8px',
-                                                    borderRadius: '12px',
-                                                    border: '1px solid #b7eb8f'
-                                                }}>
-                                                    Đang phát
-                                                </span>
-                                            )}
+                                            <Space size={4}>
+                                                {statusTag(episodeList)}
+                                                {currentEpisode === index && (
+                                                    <span style={{
+                                                        color: '#52c41a',
+                                                        fontSize: '12px',
+                                                        backgroundColor: '#f6ffed',
+                                                        padding: '4px 8px',
+                                                        borderRadius: '12px',
+                                                        border: '1px solid #b7eb8f'
+                                                    }}>
+                                                        Đang phát
+                                                    </span>
+                                                )}
+                                            </Space>
                                         </div>
                                     }
                                     description={
