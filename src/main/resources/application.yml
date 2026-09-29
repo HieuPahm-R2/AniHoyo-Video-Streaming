@@ -1,8 +1,11 @@
 spring:
-  # Local credentials file used for development only. It is optional so containers
-  # should provide the R2_* environment variables instead.
+  # Spring Boot has no native .env support, so the file is pulled in as a properties
+  # document: KEY=VALUE is exactly the .env format, and the [.properties] hint
+  # tells Boot how to parse it. 
+  # Optional on purpose: inside a container the file does not exist and the
+  # values arrive as real environment variables (R2_*, SEAWEEDFS_*, ...).
   config:
-    import: optional:file:../cmd-ani.txt[.properties]
+    import: optional:file:../.env[.properties]
   profiles:
     active: dev
   application:
@@ -48,12 +51,24 @@ storage:
     enabled: ${R2_ENABLED:false}
     account-id: ${R2_ACCOUNT_ID:}
     endpoint: ${R2_ENDPOINT:}
-    # The fallback properties support the existing cmd-ani.txt file:
-    # access=<R2 Access Key ID>
-    # secret=<R2 Secret Access Key>
-    access-key-id: ${R2_ACCESS_KEY_ID:${access:}}
-    secret-access-key: ${R2_SECRET_ACCESS_KEY:${secret:}}
+    # Credentials come from the .env file (or the R2_* environment variables in
+    # a container). See spring.config.import above for the local case.
+    access-key-id: ${R2_ACCESS_KEY_ID:}
+    secret-access-key: ${R2_SECRET_ACCESS_KEY:}
     source-bucket: ${R2_SOURCE_BUCKET:anihoyo-source}
     media-bucket: ${R2_MEDIA_BUCKET:anihoyo-media}
     public-base-url: ${R2_PUBLIC_BASE_URL:https://media.108pog.site}
     hls-prefix: ${R2_HLS_PREFIX:hls}
+    # true  = API tự stream HLS (cùng origin với SPA, không cần CORS trên bucket).
+    # false = trả 302 sang CDN; khi đó bucket phải có CORS policy cho origin của SPA.
+    hls-relay: ${R2_HLS_RELAY:true}
+  # Images only (poster/thumbnail/avatar/slider). Videos stay on R2.
+  seaweedfs:
+    enabled: ${SEAWEEDFS_ENABLED:false}
+    endpoint: ${SEAWEEDFS_ENDPOINT:http://localhost:8333}
+    access-key-id: ${SEAWEEDFS_ACCESS_KEY_ID:}
+    secret-access-key: ${SEAWEEDFS_SECRET_ACCESS_KEY:}
+    bucket: ${SEAWEEDFS_BUCKET:anihoyo-media}
+    region: ${SEAWEEDFS_REGION:us-east-1}
+    # Serve objects uploaded before the migration from the local volume.
+    fallback-to-local: ${SEAWEEDFS_FALLBACK_TO_LOCAL:true}

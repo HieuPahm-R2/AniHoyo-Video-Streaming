@@ -14,6 +14,15 @@ public class R2StorageProperties {
     private String publicBaseUrl;
     private String hlsPrefix;
 
+    /**
+     * {@code true} (default): the API streams HLS playlists/segments itself, so
+     * playback stays same-origin and needs no CORS rule on the bucket.
+     * {@code false}: answer 302 to {@link #publicBaseUrl} and let the CDN serve
+     * the media — cheaper, but the bucket then needs a CORS policy allowing the
+     * SPA origin, otherwise hls.js cannot read the playlists in a browser.
+     */
+    private boolean hlsRelay = true;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getAccountId() { return accountId; }
@@ -32,4 +41,6 @@ public class R2StorageProperties {
     public void setPublicBaseUrl(String publicBaseUrl) { this.publicBaseUrl = publicBaseUrl; }
     public String getHlsPrefix() { return hlsPrefix; }
     public void setHlsPrefix(String hlsPrefix) { this.hlsPrefix = hlsPrefix; }
+    public boolean isHlsRelay() { return hlsRelay; }
+    public void setHlsRelay(boolean hlsRelay) { this.hlsRelay = hlsRelay; }
 }

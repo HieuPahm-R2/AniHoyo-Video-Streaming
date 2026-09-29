@@ -6,6 +6,9 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -22,12 +25,14 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.HieuPahm.AniHoyo.domain.RestResponse;
 import com.HieuPahm.AniHoyo.model.entities.Episode;
 import com.HieuPahm.AniHoyo.repository.EpisodeRepository;
 import com.HieuPahm.AniHoyo.services.implement.EpisodeService;
 import com.HieuPahm.AniHoyo.services.implement.FileServiceImpl;
 import com.HieuPahm.AniHoyo.services.implement.R2MediaStorageService;
 import com.HieuPahm.AniHoyo.utils.constant.ChunkConstant;
+import com.HieuPahm.AniHoyo.utils.constant.HlsStatus;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -145,13 +150,35 @@ public class StreamController {
 
     // HLS - Adaptive streaming
     @GetMapping("/{id}/master.m3u8")
-    public ResponseEntity<Resource> serverMasterFile(@PathVariable("id") long id) {
+    public ResponseEntity<?> serverMasterFile(@PathVariable("id") long id) {
         Optional<Episode> episode = this.episodeRepository.findById(id);
         if (episode.isEmpty()) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
         if (r2MediaStorageService.isEnabled()) {
-            return ResponseEntity.<Resource>status(HttpStatus.FOUND)
+            HlsStatus status = episode.get().getHlsStatus();
+            if (status != HlsStatus.READY) {
+                // Redirecting to the CDN before the pipeline uploaded anything only
+                // makes the player report an opaque 404. Answer with the real state
+                // instead (409 + the same RestResponse envelope as every other error).
+                RestResponse<Object> body = new RestResponse<>();
+                body.setStatusCode(HttpStatus.CONFLICT.value());
+                body.setMessage(playbackNotReadyMessage(id, status));
+                body.setError(status == null ? "UNKNOWN" : status.name());
+                body.setTimestamp(Instant.now());
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("episodeId", id);
+                details.put("hlsStatus", status == null ? "UNKNOWN" : status.name());
+                if (episode.get().getHlsError() != null) {
+                    details.put("hlsError", episode.get().getHlsError());
+                }
+                body.setData(details);
+                return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+            }
+            if (r2MediaStorageService.isRelayEnabled()) {
+                return hlsObject(episode.get(), "master.m3u8");
+            }
+            return ResponseEntity.status(HttpStatus.FOUND)
                     .location(r2MediaStorageService.masterPlaylistUri(episode.get()))
                     .build();
         }
@@ -174,9 +201,39 @@ public class StreamController {
                 .body(resource);
     }
 
+    private static String playbackNotReadyMessage(long id, HlsStatus status) {
+        if (status == HlsStatus.FAILED) {
+            return "Xử lý HLS cho tập phim này thất bại, kiểm tra 'hlsError' của episode rồi xử lý lại.";
+        }
+        if (status == HlsStatus.PENDING || status == HlsStatus.PROCESSING) {
+            return "Video đang được xử lý (chuyển mã HLS), vui lòng thử lại sau ít phút.";
+        }
+        return "Tập phim này chưa có HLS trên R2. Gọi POST /api/v1/process-episode/" + id + " để xử lý lại.";
+    }
+
+    /**
+     * Streams one HLS object out of the media bucket so playback is same-origin
+     * (no CORS rule needed on the bucket, works with hls.js in every browser).
+     */
+    private ResponseEntity<?> hlsObject(Episode episode, String relativePath) {
+        Resource resource = r2MediaStorageService.mediaResource(episode, relativePath);
+        if (resource == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+        return ResponseEntity.ok()
+                .contentType(hlsContentType(relativePath))
+                .body(resource);
+    }
+
+    private static MediaType hlsContentType(String relativePath) {
+        return relativePath.endsWith(".ts")
+                ? MediaType.parseMediaType("video/mp2t")
+                : MediaType.parseMediaType("application/vnd.apple.mpegurl");
+    }
+
     // serve the segments
     @GetMapping("/{id}/{quality}/{segment}.ts")
-    public ResponseEntity<Resource> serveSegments(
+    public ResponseEntity<?> serveSegments(
             @PathVariable("id") long id,
             @PathVariable String quality,
             @PathVariable String segment) {
@@ -190,7 +247,10 @@ public class StreamController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
         }
         if (r2MediaStorageService.isEnabled()) {
-            return ResponseEntity.<Resource>status(HttpStatus.FOUND)
+            if (r2MediaStorageService.isRelayEnabled()) {
+                return hlsObject(episode.get(), quality + "/" + segment + ".ts");
+            }
+            return ResponseEntity.status(HttpStatus.FOUND)
                     .location(r2MediaStorageService.objectUri(episode.get(), quality + "/" + segment + ".ts"))
                     .build();
         }
@@ -216,7 +276,7 @@ public class StreamController {
     // serve quality-specific playlist files (360p/index.m3u8, 720p/index.m3u8,
     // etc.)
     @GetMapping("/{id}/{quality}/index.m3u8")
-    public ResponseEntity<Resource> serveQualityPlaylist(
+    public ResponseEntity<?> serveQualityPlaylist(
             @PathVariable("id") long id,
             @PathVariable String quality) {
         Optional<Episode> episode = this.episodeRepository.findById(id);
@@ -229,7 +289,10 @@ public class StreamController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
         }
         if (r2MediaStorageService.isEnabled()) {
-            return ResponseEntity.<Resource>status(HttpStatus.FOUND)
+            if (r2MediaStorageService.isRelayEnabled()) {
+                return hlsObject(episode.get(), quality + "/index.m3u8");
+            }
+            return ResponseEntity.status(HttpStatus.FOUND)
                     .location(r2MediaStorageService.objectUri(episode.get(), quality + "/index.m3u8"))
                     .build();
         }

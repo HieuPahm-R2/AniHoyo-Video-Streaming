@@ -14,10 +14,14 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.io.AbstractResource;
+import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.HieuPahm.AniHoyo.config.R2StorageConfiguration;
 import com.HieuPahm.AniHoyo.config.R2StorageProperties;
 import com.HieuPahm.AniHoyo.model.entities.Episode;
 
@@ -26,14 +30,19 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 @Service
 public class R2MediaStorageService {
     private final ObjectProvider<S3Client> s3ClientProvider;
     private final R2StorageProperties properties;
 
-    public R2MediaStorageService(ObjectProvider<S3Client> s3ClientProvider, R2StorageProperties properties) {
+    public R2MediaStorageService(
+            @Qualifier(R2StorageConfiguration.S3_CLIENT_BEAN) ObjectProvider<S3Client> s3ClientProvider,
+            R2StorageProperties properties) {
         this.s3ClientProvider = s3ClientProvider;
         this.properties = properties;
     }
@@ -103,6 +112,76 @@ public class R2MediaStorageService {
     public URI objectUri(Episode episode, String relativePath) {
         String baseUrl = properties.getPublicBaseUrl().replaceAll("/+$", "");
         return URI.create(baseUrl + "/" + hlsPrefix(episode) + "/" + relativePath);
+    }
+
+    /** When false the API redirects to the CDN instead of relaying the bytes. */
+    public boolean isRelayEnabled() {
+        return properties.isHlsRelay();
+    }
+
+    /**
+     * Opens one HLS object from the media bucket as a Spring {@link Resource}.
+     *
+     * <p>The relay exists because the CDN lives on another origin: serving the
+     * playlists and segments from the API keeps playback same-origin, so no CORS
+     * policy is needed on the bucket and hls.js works in every browser.
+     *
+     * @return the resource, or {@code null} when the object is not in the bucket
+     */
+    public Resource mediaResource(Episode episode, String relativePath) {
+        requireEnabled();
+        String key = hlsPrefix(episode) + "/" + relativePath;
+        try {
+            HeadObjectResponse head = client().headObject(HeadObjectRequest.builder()
+                    .bucket(properties.getMediaBucket())
+                    .key(key)
+                    .build());
+            return new R2ObjectResource(key, head.contentLength());
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 404) {
+                return null;
+            }
+            throw exception;
+        }
+    }
+
+    /** Lazily opened S3 object: the length is known up-front, the body on first read. */
+    private final class R2ObjectResource extends AbstractResource {
+        private final String key;
+        private final long length;
+
+        private R2ObjectResource(String key, long length) {
+            this.key = key;
+            this.length = length;
+        }
+
+        @Override
+        public String getDescription() {
+            return "R2 object [" + key + "]";
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return client().getObject(GetObjectRequest.builder()
+                    .bucket(properties.getMediaBucket())
+                    .key(key)
+                    .build());
+        }
+
+        @Override
+        public boolean exists() {
+            return true;
+        }
+
+        @Override
+        public long contentLength() {
+            return length;
+        }
+
+        @Override
+        public String getFilename() {
+            return key;
+        }
     }
 
     public void deleteDirectory(Path directory) {
