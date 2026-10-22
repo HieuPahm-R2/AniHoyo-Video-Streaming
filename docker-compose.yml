@@ -1,0 +1,244 @@
+# =============================================================================
+#  AniHoyo - full stack (Nginx web server + reverse proxy, Spring Boot API,
+#  MySQL, Redis, SeaweedFS for image storage, Cloudflare R2 for video storage)
+#
+#  Run with Podman:
+#      podman compose -f docker-compose.yml up -d --build
+#      podman compose -f docker-compose.yml ps
+#      podman compose -f docker-compose.yml logs -f backend
+#      podman compose -f docker-compose.yml down
+#      podman compose -f docker-compose.yml up -d --force-recreate backend
+#
+#  Media split (see DEPLOY.md):
+#    * Images  (poster/thumbnail/avatar/slider) -> SeaweedFS, served by the
+#      backend at /storage/** so every existing URL keeps working.
+#    * Videos  (originals + HLS output)         -> Cloudflare R2 behind its CDN.
+
+
+services:
+
+  # ------------------------------------------------------------------ MySQL --
+  mysql:
+    image: docker.io/library/mysql:8.4
+    container_name: anihoyo-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-anihoyo}
+      MYSQL_USER: ${MYSQL_USER:-anihoyo}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-anihoyo_secret}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_secret}
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./deploy/mysql/initdb:/docker-entrypoint-initdb.d:ro
+    # Published on loopback so that a backend started *outside* compose
+    # reads and writes exactly the same data as the containerised one.
+    # Bound to 127.0.0.1 so it is never reachable from the LAN.
+    ports:
+      - "127.0.0.1:${MYSQL_HOST_PORT:-3306}:3306"
+    networks:
+      - anihoyo-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  # ------------------------------------------------------------------ Redis --
+  # Cache + view-spam protection (@Cacheable, SETNX with TTL).
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: anihoyo-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis-data:/data
+    ports:
+      # Loopback-only, same reasoning as the mysql service. Host 6377 is the
+      # port the `dev` profile expects (application-dev.yml).
+      - "127.0.0.1:${REDIS_HOST_PORT:-6377}:6379"
+    networks:
+      - anihoyo-net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ------------------------------------------------------------ SeaweedFS ----
+  # A single all-in-one `weed server` process runs master + volume + filer +
+  # the S3 gateway, which fits the RAM budget of the podman machine. 
+  # the backend only ever talks to the S3 endpoint, so nothing has to change.
+  seaweedfs:
+    image: docker.io/chrislusf/seaweedfs:4.46
+    container_name: anihoyo-seaweedfs
+    restart: unless-stopped
+    # `server` starts master(9333), volume(8080) and filer(8888) itself;
+    # `-s3` adds the S3-compatible gateway on 8333.
+    command:
+      - server
+      - -dir=/data
+      - -s3
+      - -s3.port=8333
+      # Belt and braces: the backend also creates the bucket on startup.
+      - -s3.autoCreateBucket
+      # Uploaded objects must be readable by the filer's public read path.
+      - -s3.defaultFileMode=0644
+      - -filer.port=8888
+      - -master.port=9333
+      - -volume.port=8080
+      - -ip.bind=0.0.0.0
+      - -metricsPort=9325
+    environment:
+      # Supplying a key pair switches the S3 gateway out of its default
+      # "allow all anonymous" mode: every request must then be signed, which
+      # is why nginx serves public media through the filer instead.
+      AWS_ACCESS_KEY_ID: ${SEAWEEDFS_ACCESS_KEY_ID:-anihoyo}
+      AWS_SECRET_ACCESS_KEY: ${SEAWEEDFS_SECRET_ACCESS_KEY:-anihoyo_secret}
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+    volumes:
+      # Volume data, filer metadata (leveldb2) and master metadata all live here.
+      - seaweedfs-data:/data
+    # Loopback-only. The stack reaches SeaweedFS over anihoyo-net; these are
+    # published purely for `aws s3` debugging and the migration script.
+    ports:
+      - "127.0.0.1:${SEAWEEDFS_S3_PORT:-8333}:8333"
+      - "127.0.0.1:${SEAWEEDFS_MASTER_PORT:-9333}:9333"
+    expose:
+      - "8333"
+      - "8888"
+    networks:
+      - anihoyo-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9333/cluster/status >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------- Spring Boot ----
+  backend:
+    build:
+      context: ./AniHoyo-backend-server
+      dockerfile: Dockerfile
+    image: localhost/anihoyo-backend:latest
+    container_name: anihoyo-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      # --- Spring profile is pinned to `prod` by the image CMD ---
+      SERVER_PORT: "8083"
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+
+      # --- Datasource (application-prod.yml: jdbc:mysql://${DB_HOST}:3306/anihoyo)
+      DB_HOST: mysql
+      DB_USERNAME: ${MYSQL_USER:-anihoyo}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-anihoyo_secret}
+
+      # --- Redis ---
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+
+      # --- Auth ---
+      JWT_SECRET: ${JWT_SECRET:-qoAEABDke07+AVLepXB4aCMtsT0wMAqR5x2VFyldsnx6e75YQkJH2UcZKTjEyoNgG71SBCXfq5N6NVZxWOfsHQ==}
+      VIEW_COOKIE_SECURE: ${VIEW_COOKIE_SECURE:-false}
+
+      # --- Cloudflare R2: private originals + public HLS output (videos) ---
+      R2_ENABLED: ${R2_ENABLED:-true}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_SOURCE_BUCKET: ${R2_SOURCE_BUCKET:-anihoyo-source}
+      R2_MEDIA_BUCKET: ${R2_MEDIA_BUCKET:-anihoyo-media}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-https://media.108pog.site}
+      R2_HLS_PREFIX: ${R2_HLS_PREFIX:-hls}
+      # true: backend tự phát HLS (cùng origin với SPA -> không cần CORS trên bucket).
+      # false: trả 302 sang R2_PUBLIC_BASE_URL (tốn ít băng thông VPS hơn, nhưng
+      #        bucket phải có CORS policy, nếu không hls.js bị chặn ở trình duyệt).
+      R2_HLS_RELAY: ${R2_HLS_RELAY:-true}
+
+      # --- SeaweedFS: images (poster/thumbnail/avatar/slider) ---
+      SEAWEEDFS_ENABLED: ${SEAWEEDFS_ENABLED:-true}
+      # The S3 gateway is reached over the internal network, never the host.
+      SEAWEEDFS_ENDPOINT: ${SEAWEEDFS_ENDPOINT:-http://seaweedfs:8333}
+      SEAWEEDFS_ACCESS_KEY_ID: ${SEAWEEDFS_ACCESS_KEY_ID:-anihoyo}
+      SEAWEEDFS_SECRET_ACCESS_KEY: ${SEAWEEDFS_SECRET_ACCESS_KEY:-anihoyo_secret}
+      SEAWEEDFS_BUCKET: ${SEAWEEDFS_BUCKET:-anihoyo-media}
+      SEAWEEDFS_REGION: ${SEAWEEDFS_REGION:-us-east-1}
+      # Read objects uploaded before the migration straight from the old
+      # ./data/uploads bind mount instead of returning 404.
+      SEAWEEDFS_FALLBACK_TO_LOCAL: ${SEAWEEDFS_FALLBACK_TO_LOCAL:-true}
+
+      # --- JVM: the podman machine has limited RAM, keep the heap bounded ---
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=${JAVA_MAX_RAM_PERCENT:-60} -XX:+ExitOnOutOfMemoryError"
+    volumes:
+      # hieupham.upload-file.base-uri = file:///uploads/ (application-prod.yml).
+      # Images now live in SeaweedFS; this mount is kept as the read-only
+      # fallback for assets uploaded before the migration (see
+      # SEAWEEDFS_FALLBACK_TO_LOCAL) and as the local store when
+      # SEAWEEDFS_ENABLED=false. It also holds videos when R2_ENABLED=false.
+      - ./data/uploads:/uploads
+    # Only reachable through the nginx proxy on the internal network.
+    expose:
+      - "8083"
+    networks:
+      - anihoyo-net
+    healthcheck:
+      # /api/v1/test-cors is public in the security config; 401/403 still prove
+      # that Spring Security + Tomcat are serving traffic.
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8083/api/v1/test-cors | grep -qE '^(200|401|403)$$'"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+  # ------------------------------------------------- Nginx (web + proxy) ----
+  nginx-proxy:
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+      args:
+        # Empty => the SPA calls the API on its own origin, which nginx proxies.
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-}
+        VITE_ACL_ENABLE: ${VITE_ACL_ENABLE:-true}
+    image: localhost/anihoyo-web:latest
+    container_name: anihoyo-nginx-proxy
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      # Host port for the web tier. 80 is the standard HTTP port; set WEB_PORT
+      # in .env to use another one (e.g. 8080) without editing this file.
+      - "${WEB_PORT:-80}:80"
+    networks:
+      - anihoyo-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  anihoyo-net:
+    name: anihoyo-net
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:
+  # SeaweedFS volume data + filer/master metadata.
+  seaweedfs-data:

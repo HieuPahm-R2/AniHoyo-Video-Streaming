@@ -1,0 +1,51 @@
+spring:
+  datasource:
+    # Defaults match the `mysql` service of docker-compose.yml (user/password
+    # come from the MYSQL_USER / MYSQL_PASSWORD entries of .env, and the port is
+    # published on 127.0.0.1:3306). Override with DB_* env vars to point the dev
+    # profile at another server.
+    url: ${DB_URL:jdbc:mysql://localhost:3306/anihoyo}
+    username: ${DB_USERNAME:anihoyo}
+    password: ${DB_PASSWORD:anihoyo_secret}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        "[format_sql]": true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      # (container port stays 6379).
+      port: ${REDIS_PORT:6377}
+storage:
+  # the direction: uploads go to S3
+  # Images -> SeaweedFS gateway, videos/HLS -> Cloudflare R2, using
+  # Each switch can still be forced off with a real env var, e.g.
+  # SEAWEEDFS_ENABLED=false (env vars outrank every config file).
+  r2:
+    enabled: ${R2_ENABLED:true}
+  seaweedfs:
+    enabled: ${SEAWEEDFS_ENABLED:true}
+    endpoint: 'http://localhost:8333'
+openapi:
+  service:
+    api-docs: api-service
+    serverUrl: http://localhost:${server.port}
+    serverName: Server Dev
+    title: API Document
+    version: 1.0.0
+
+anihoyo:
+  jwt:
+    base64-secret: qoAEABDke07+AVLepXB4aCMtsT0wMAqR5x2VFyldsnx6e75YQkJH2UcZKTjEyoNgG71SBCXfq5N6NVZxWOfsHQ==
+
+hieupham:
+  upload-file:
+    # Same directory the compose stack bind-mounts as /uploads (./data/uploads),
+    # so images written by a locally-run backend are the ones the containerised
+    # backend would serve.
+    base-uri: '${UPLOAD_BASE_URI:file:///D:/anihoyo/data/uploads/}'
+  # ffmpeg is only needed for video transcoding; install it and override this
+  # path (FFMPEG_PATH) when testing the HLS pipeline locally.
+  ffmpeg-path: '${FFMPEG_PATH:C:\ffmpeg\bin\ffmpeg.exe}'

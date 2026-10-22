@@ -1,0 +1,21 @@
+.out-banner {
+  margin-top: 4vw;
+  margin-right: 8vw;
+  display: flex;
+  align-items: flex-start;
+}
+
+@media (max-width: 900px) {
+  .out-banner{
+    margin-top: 4vw;
+    margin-right: 4vw;
+  }
+}
+
+@media (max-width: 600px) {
+  .out-banner {
+    margin-top: 6vw;
+    margin-right: 6vw;
+    justify-content: center;
+  }
+}

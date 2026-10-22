@@ -1,0 +1,51 @@
+@media (min-width: 992px) {
+  .layout-dashboard {
+    .ant-layout-footer {
+      margin: 0 0 20px 20px;
+    }
+
+    .ant-layout-sider.sider-primary {
+      margin: 20px 0 0 20px;
+      padding: 13px 20px;
+      height: calc(100vh - 20px);
+    }
+
+    .ant-layout {
+      width: auto;
+      flex-shrink: 1;
+      margin-left: 270px;
+    }
+
+    .header-control .sidebar-toggler {
+      display: none;
+    }
+  }
+}
+
+@media (min-width: 768px) {
+  .layout-dashboard {
+    .ant-layout-header {
+      margin: 10px 20px;
+    }
+
+    .header-control {
+      margin-top: 0;
+
+      .header-search {
+        margin: 0 7px;
+      }
+
+      .btn-sign-in span {
+        display: inline;
+      }
+    }
+  }
+
+  .profile-nav-bg {
+    margin-top: -87.8px;
+  }
+
+  .card-profile-head {
+    margin: -53px 24px 24px;
+  }
+}

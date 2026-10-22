@@ -1,0 +1,38 @@
+spring:
+  datasource:
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    url: jdbc:mysql://${DB_HOST:localhost}:3306/anihoyo
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        "[format_sql]": false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+server:
+  port: ${SERVER_PORT:8083}
+
+anihoyo:
+  jwt:
+    base64-secret: ${JWT_SECRET}
+    access-token-validity-in-seconds: ${JWT_ACCESS_EXPIRY:8640}
+    refresh-token-validity-in-seconds: ${JWT_REFRESH_EXPIRY:864000}
+
+hieupham:
+  upload-file:
+    base-uri: file:///uploads/
+  ffmpeg-path: /usr/bin/ffmpeg
+
+storage:
+  r2:
+    # Production must explicitly be able to reach R2; fail at startup rather
+    # than silently falling back to a container-local volume.
+    enabled: ${R2_ENABLED:true}
+  seaweedfs:
+    # Images are stored on the `seaweedfs` service from docker-compose.yml.
+    # Setting this to false reverts /storage/** to the local /uploads volume.
+    enabled: ${SEAWEEDFS_ENABLED:true}

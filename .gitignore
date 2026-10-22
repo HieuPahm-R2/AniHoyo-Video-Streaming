@@ -1,36 +1,23 @@
-HELP.md
-target/
-videos/
-cmd-ani.txt
+# Local configuration and secrets (templates are safe to commit).
 .env
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+.env.*
+!.env.example
+!.env.*.example
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
+# Dependencies and build output.
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/target/
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
+# Runtime uploads stay local; retain the directory in fresh clones.
+/data/*
+!/data/uploads/
+/data/uploads/*
+!/data/uploads/.gitkeep
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-### VS Code ###
-.vscode/
+# Local editor state and logs. Shared .vscode configuration is tracked.
+**/.idea/
+*.log
+.DS_Store
+Thumbs.db

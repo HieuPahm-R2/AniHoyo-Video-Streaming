@@ -1,0 +1,14 @@
+{
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Spring Boot-AniHoyoApplication<AniHoyo>",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "mainClass": "com.HieuPahm.AniHoyo.AniHoyoApplication",
+            "projectName": "AniHoyo",
+            "args": "",
+            "envFile": "${workspaceFolder}/.env"
+        }
+    ]
+}

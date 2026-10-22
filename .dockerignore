@@ -1,0 +1,13 @@
+# Build context for the repository-root build (deploy/nginx/Dockerfile).
+# Keep the context small: the frontend image only needs the SPA sources.
+.git
+**/.git
+**/.git/**
+**/node_modules
+**/dist
+**/target
+**/.idea
+**/.vscode
+**/*.log
+.env
+data/
